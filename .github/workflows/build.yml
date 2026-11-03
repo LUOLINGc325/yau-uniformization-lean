@@ -1,0 +1,154 @@
+name: build
+
+# Clean build of every module, a no-`sorry` check of the build log, a comment-stripped source scan,
+# a check that the definitions are the audited ones, and an axiom audit of the endpoint theorems
+# after checking their exact types. The project build is cached between runs, so a run that hits the
+# time limit can simply be re-run and continues where it stopped.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install elan and the pinned toolchain
+        run: |
+          set -euo pipefail
+          retry() { for i in 1 2 3 4; do "$@" && return 0; echo "retry $i: $*" >&2; sleep $((i*15)); done; "$@"; }
+          installer=$(mktemp)
+          retry curl --fail --location --retry 3 https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -o "$installer"
+          sh "$installer" -y --default-toolchain none
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.elan/bin:$PATH"
+          retry elan toolchain install "$(cat lean-toolchain)"
+          lake --version
+
+      - name: Restore the project build from earlier runs
+        uses: actions/cache/restore@v4
+        with:
+          path: .lake/build
+          key: lake-build-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ github.sha }}
+          restore-keys: |
+            lake-build-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-
+
+      - name: Fetch Mathlib (official cache)
+        run: |
+          set -euo pipefail
+          retry() { for i in 1 2 3 4; do "$@" && return 0; echo "retry $i: $*" >&2; sleep $((i*15)); done; "$@"; }
+          retry lake exe cache get
+          python3 - <<'PY'
+          import json, subprocess
+          from pathlib import Path
+          for p in json.loads(Path('lake-manifest.json').read_text())['packages']:
+              actual = subprocess.check_output(['git', '-C', '.lake/packages/' + p['name'], 'rev-parse', 'HEAD'], text=True).strip()
+              if actual != p['rev']:
+                  raise SystemExit('Dependency revision mismatch: ' + p['name'])
+          print('All dependency revisions match the lockfile')
+          PY
+
+      - name: Build
+        timeout-minutes: 320
+        run: |
+          set -euo pipefail
+          lake build 2>&1 | tee build.log
+
+      - name: Save the project build for the next run
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .lake/build
+          key: lake-build-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: No sorry and no errors in the build log
+        run: |
+          if grep -nE "declaration uses ['\`]?sorry|(^|[^a-z])error:" build.log; then
+            echo "::error::build log contains sorry or errors"; exit 1
+          fi
+          echo "no sorry warnings, no errors"
+
+      - name: Definitions are the audited ones
+        run: sha256sum -c scripts/DEFINITIONS.sha256
+
+      - name: Source scan (comments and strings removed)
+        run: |
+          python3 - <<'PY'
+          import re, sys
+          from pathlib import Path
+          def strip(src):
+              out, i, n, depth = [], 0, len(src), 0
+              while i < n:
+                  if depth == 0 and src.startswith('--', i):
+                      j = src.find('\n', i); i = n if j < 0 else j
+                  elif src.startswith('/-', i):
+                      depth += 1; i += 2
+                  elif depth and src.startswith('-/', i):
+                      depth -= 1; i += 2
+                  elif depth:
+                      out.append('\n' if src[i] == '\n' else ' '); i += 1
+                  elif src[i] == '"':
+                      j = i + 1
+                      while j < n and src[j] != '"':
+                          j += 2 if src[j] == '\\' else 1
+                      out.append('""'); i = j + 1
+                  else:
+                      out.append(src[i]); i += 1
+              return ''.join(out)
+          forbidden = re.compile(r"\b(sorry|admit|native_decide|implemented_by|extern|skipKernelTC|unsafe)\b"
+                                 r"|^\s*((private|protected|noncomputable)\s+)*axiom\b|@\[csimp\]|set_option\s+debug\.", re.M)
+          bad = []
+          for p in sorted(list(Path('Yau').rglob('*.lean')) + list(Path('spec').rglob('*.lean'))):
+              text = strip(p.read_text(encoding='utf-8'))
+              for m in forbidden.finditer(text):
+                  line = text.count('\n', 0, m.start()) + 1
+                  bad.append(f'{p}:{line}: {m.group(0).strip()}')
+          print('\n'.join(bad) if bad else 'source scan clean')
+          sys.exit(1 if bad else 0)
+          PY
+
+      - name: Endpoint types and axiom audit
+        run: |
+          set -euo pipefail
+          lake env lean scripts/CheckStatement.lean 2>&1 | tee axioms.txt
+          python3 - <<'PY'
+          import re, sys
+          text = open('axioms.txt').read()
+          allowed = {'propext', 'Classical.choice', 'Quot.sound'}
+          found = {}
+          for name, axs in re.findall(r"'([^']+)' depends on axioms:\s*\[([^\]]*)\]", text):
+              found[name] = {a.strip() for a in axs.split(',') if a.strip()}
+          for name in re.findall(r"'([^']+)' does not depend on any axioms", text):
+              found[name] = set()
+          want = [l.strip() for l in open('scripts/ENDPOINTS.txt') if l.strip() and not l.startswith('#')]
+          bad = False
+          for w in want:
+              if w not in found:
+                  print('MISSING axiom report for', w); bad = True
+              elif found[w] - allowed:
+                  print('DISALLOWED axioms for', w, sorted(found[w] - allowed)); bad = True
+              else:
+                  print('OK', w, sorted(found[w]))
+          if re.search(r'(^|\n)\S*: error', text) or 'sorryAx' in text:
+              print('errors or sorryAx in output'); bad = True
+          sys.exit(1 if bad else 0)
+          PY
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs
+          path: |
+            axioms.txt
+            build.log
+          if-no-files-found: warn
