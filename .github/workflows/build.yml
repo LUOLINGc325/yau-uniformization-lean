@@ -1,9 +1,10 @@
 name: build
 
-# Clean build of every module, a no-`sorry` check of the build log, a comment-stripped source scan,
+# Build of every module, a no-`sorry` check of the build log, a comment-stripped source scan,
 # a check that the definitions are the audited ones, and an axiom audit of the endpoint theorems
-# after checking their exact types. The project build is cached between runs, so a run that hits the
-# time limit can simply be re-run and continues where it stopped.
+# after checking their types. The project build is cached under a key derived from the hash of all
+# Lean sources, the lakefile, the lockfile and the toolchain: a run restores only a build made from
+# byte-identical sources, so a run that hits the time limit can be re-run and continues where it stopped.
 on:
   push:
     branches: [main]
@@ -20,7 +21,58 @@ jobs:
       run:
         shell: bash
     steps:
+      - name: Free disk
+        run: |
+          set -u
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/local/share/boost /usr/share/swift || true
+          sudo docker image prune --all --force || true
+          if [ -d /mnt ]; then
+            free_kb=$(df -Pk /mnt | awk 'NR==2 {print $4}')
+            case "${free_kb:-}" in
+              ''|*[!0-9]*) free_kb=0 ;;
+            esac
+            if [ "$free_kb" -gt $((24*1024*1024)) ]; then
+              sudo rm -f /mnt/ci.swap || true
+              if sudo fallocate -l 16G /mnt/ci.swap; then
+                sudo chmod 600 /mnt/ci.swap || true
+                sudo mkswap /mnt/ci.swap || true
+                sudo swapon /mnt/ci.swap || true
+              fi
+            fi
+          fi
+          df -h / /mnt || true
+          free -h || true
+
       - uses: actions/checkout@v4
+
+      - name: Source hash
+        id: src
+        run: |
+          python3 - <<'PY'
+          import hashlib, os, subprocess
+          from pathlib import Path
+
+          h = hashlib.sha256()
+          for name in ("lean-toolchain", "lake-manifest.json", "lakefile.toml"):
+              with open(name, "rb") as f:
+                  for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                      h.update(chunk)
+
+          paths = []
+          for root in ("Yau", "spec"):
+              root_path = Path(root)
+              if root_path.exists():
+                  paths.extend(p for p in root_path.rglob("*.lean") if p.is_file())
+          names = [os.fsencode(p.as_posix()) for p in paths]
+          names.sort()
+          if names:
+              h.update(subprocess.check_output([b"sha256sum", b"-z", b"--"] + names))
+          value = h.hexdigest()[:40]
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              out.write(f"hash={value}\n")
+          print(f"Source hash: {value}")
+          PY
 
       - name: Install elan and the pinned toolchain
         run: |
@@ -35,12 +87,17 @@ jobs:
           lake --version
 
       - name: Restore the project build from earlier runs
+        id: restore-build-cache
         uses: actions/cache/restore@v4
         with:
           path: .lake/build
-          key: lake-build-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ github.sha }}
+          key: lake-build-${{ steps.src.outputs.hash }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            lake-build-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-
+            lake-build-${{ steps.src.outputs.hash }}-
+
+      - name: Report restored build cache
+        run: |
+          echo "Cache matched key: ${{ steps.restore-build-cache.outputs.cache-matched-key || 'none' }}"
 
       - name: Fetch Mathlib (official cache)
         run: |
@@ -56,19 +113,31 @@ jobs:
                   raise SystemExit('Dependency revision mismatch: ' + p['name'])
           print('All dependency revisions match the lockfile')
           PY
+          rm -rf ~/.cache/mathlib
+          df -h /
 
       - name: Build
         timeout-minutes: 320
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          rm -f .prune-stop
+          python3 scripts/prune_setups.py --loop 20 --stop-file .prune-stop > prune.log 2>&1 &
+          pruner=$!
           lake build 2>&1 | tee build.log
+          lake_status=${PIPESTATUS[0]}
+          touch .prune-stop
+          wait "$pruner" || true
+          python3 scripts/prune_setups.py >> prune.log 2>&1 || true
+          tail -n 5 prune.log || true
+          df -h / || true
+          exit "$lake_status"
 
       - name: Save the project build for the next run
         if: always()
         uses: actions/cache/save@v4
         with:
           path: .lake/build
-          key: lake-build-${{ hashFiles('lean-toolchain', 'lake-manifest.json') }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: lake-build-${{ steps.src.outputs.hash }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: No sorry and no errors in the build log
         run: |
@@ -104,8 +173,14 @@ jobs:
                   else:
                       out.append(src[i]); i += 1
               return ''.join(out)
-          forbidden = re.compile(r"\b(sorry|admit|native_decide|implemented_by|extern|skipKernelTC|unsafe)\b"
-                                 r"|^\s*((private|protected|noncomputable)\s+)*axiom\b|@\[csimp\]|set_option\s+debug\.", re.M)
+          forbidden = re.compile(
+              r"\b(sorry|admit|native_decide|implemented_by|extern|skipKernelTC|unsafe)\b"
+              r"|^\s*(@\[[^\]]*\]\s*)*((private|protected|noncomputable|unsafe|partial|local|scoped)\s+)*axiom\b"
+              r"|^\s*(@\[[^\]]*\]\s*)*((local|scoped|private|protected)\s+)*(macro|macro_rules|syntax|elab|elab_rules|initialize|builtin_initialize|run_cmd|run_elab|run_meta|declare_syntax_cat)\b"
+              r"|^\s*#(eval|exit|reduce)\b"
+              r"|@\[csimp\]|set_option\s+debug\.",
+              re.M
+          )
           bad = []
           for p in sorted(list(Path('Yau').rglob('*.lean')) + list(Path('spec').rglob('*.lean'))):
               text = strip(p.read_text(encoding='utf-8'))
@@ -151,4 +226,5 @@ jobs:
           path: |
             axioms.txt
             build.log
+            prune.log
           if-no-files-found: warn

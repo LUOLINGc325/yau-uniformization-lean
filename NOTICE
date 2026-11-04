@@ -2,8 +2,9 @@ yau-uniformization-lean
 Copyright 2026 LUOLINGc325
 
 This repository is licensed under the Apache License, Version 2.0 (see LICENSE).
-All files in it were written for this project, by AI coding agents working
-under the direction of the repository owner.
+Apart from LICENSE (the standard Apache-2.0 text) and the generated lockfile
+lake-manifest.json, the files in it were written for this project, by AI coding
+agents working under the direction of the repository owner.
 
 The mathematics formalized here (the theorem and its proof) follows the paper
 "Uniformization of complete Kähler manifolds with positive bisectional

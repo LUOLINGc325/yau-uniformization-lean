@@ -20,7 +20,7 @@ holomorphic bisectional curvature is biholomorphic to `ℂⁿ`.
 | Lean name | Content |
 |---|---|
 | `Yau.main` | Theorem 1.1 |
-| `Yau.main_nonvacuous` | the hypotheses are satisfiable: `Nonempty (KahlerManifold 1)` (the complete cigar metric on `ℂ`) |
+| `Yau.main_nonvacuous` | the hypotheses are satisfiable in complex dimension 1: `Nonempty (KahlerManifold 1)` (the complete cigar metric on `ℂ`) |
 
 The statements are in [`spec/STATEMENT.lean`](spec/STATEMENT.lean); every definition they use is in
 [`Yau/Geometry/Basic.lean`](Yau/Geometry/Basic.lean). The proof is assembled in `Yau/Proofs/MainEndpoint.lean`.
@@ -41,30 +41,44 @@ match the paper is for the reader to judge):
   length distance (infimum of lengths of piecewise-`C¹` curves) is complete (every Cauchy sequence converges), whose Kähler form is closed, and which
   satisfies the paper's curvature hypothesis `Rm(u,v,v,u) + Rm(u,Jv,Jv,u) > 0` for all nonzero real tangent vectors
   `u, v` (`PaperPositiveBisectional`). The curvature tensor is computed from the metric's Levi-Civita symbols; it is
-  not supplied as data.
+  not supplied as data. Only `PaperPositiveBisectional` enters `KahlerManifold`; the other curvature definitions in
+  `Basic.lean` (a Chern-curvature calculator and normalization lemmas) are not used by the statement.
+- `SmoothMetric` also records, as fields, distance laws and the chart-transition rule of the Hermitian field;
+  `smoothMetric_of_complete_field` (`Yau/Proofs/C04BoundedGeometryChartsMetric.lean`) builds a `SmoothMetric` from
+  smoothness, the Kähler condition and completeness alone, so these fields add no hypothesis.
 - `BiholomorphicToComplexEuclidean M`: there is a Mathlib `Diffeomorph` (complex model `𝓘(ℂ, ℂⁿ)`, smoothness `⊤`)
   from `M` onto the standard `ℂⁿ` that is holomorphic with holomorphic inverse (smooth with ℂ-linear derivative
   everywhere, in both directions). The carrier of `M` is arbitrary.
-- `main_nonvacuous` is proved in `Yau/Witness/` from the metric `(dx² + dy²)/(1 + |z|²)` on `ℂ`.
+- `main_nonvacuous` is proved in `Yau/Witness/` from the metric `(dx² + dy²)/(1 + |z|²)` on `ℂ`. Non-vacuity is
+  machine-checked only for `n = 1`; the definitions are uniform in `n`.
+- Comments in some development modules (for example under `spec/attacks/` and `spec/CHAIN/`) describe earlier planning
+  states ("unproved", "open assumptions"); they are historical. `Yau/Proofs/MainEndpoint.lean` supplies every premise
+  of the endpoint assembly with proved theorems, and the axiom check below confirms that nothing is assumed.
+  Comments citing `spec/paper/…` refer to the development copy of the paper, which is not included (see `NOTICE`).
 
 ## Verification
 
-The [build workflow](.github/workflows/build.yml) of this repository builds every module from a clean checkout
-(Mathlib from its official cache), fails on any `sorry` warning or error, scans the sources (comments and strings
-removed) for `sorry`, `admit`, `native_decide`, `implemented_by`, `extern`, `unsafe`, `axiom` declarations and
-`debug.` options, checks that `Yau/Geometry/Basic.lean` is byte-identical to the audited file
-([`scripts/DEFINITIONS.sha256`](scripts/DEFINITIONS.sha256)), checks the exact types of both endpoints
-([`scripts/CheckStatement.lean`](scripts/CheckStatement.lean)) and that they depend only on `propext`,
+The [build workflow](.github/workflows/build.yml) of this repository checks out the tree, fetches Mathlib from its
+official cache, runs `lake build`, and fails on any `sorry` warning or error in the build log. It scans the sources
+(comments and strings removed) for `sorry`, `admit`, `native_decide`, `implemented_by`, `extern`, `unsafe`, `axiom`
+declarations, `@[csimp]`, `debug.` options, and commands that add declarations or run code during elaboration
+(`macro`, `syntax`, `elab`, `initialize`, `run_cmd`, `#eval`, …). It checks that `Yau/Geometry/Basic.lean` has the
+SHA-256 recorded in [`scripts/DEFINITIONS.sha256`](scripts/DEFINITIONS.sha256) (the file reviewed before release),
+elaborates [`scripts/CheckStatement.lean`](scripts/CheckStatement.lean), which checks that both endpoints have the
+stated types (up to definitional unfolding), and checks with `#print axioms` that they depend only on `propext`,
 `Classical.choice` and `Quot.sound`.
 
-Before this release, development commit `1b328a4c0a783c23d79288eeb00a58df995fe364` passed the development
-acceptance process: a full build, `#print axioms Yau.main` = `[propext, Classical.choice, Quot.sound]`,
-no source axioms or `sorry`, and an independent adversarial final review of the statement, the definitions and the
-proof modules. Toolchain `leanprover/lean4:v4.35.0`, Mathlib `v4.35.0`.
+A full build exceeds the 6-hour limit of one hosted job. A run therefore saves the project build (`.lake/build`)
+under a key derived from the SHA-256 of all Lean sources, the lakefile, the lockfile and the toolchain, and a later
+run restores only a build made from byte-identical sources. Lake then rebuilds nothing that is up to date and
+replays the stored build logs, so their warnings (including `sorry`) are still checked. While building, the workflow
+deletes the per-module setup files of modules that Lake has finished (`scripts/prune_setups.py`), which would
+otherwise fill the runner's disk.
 
-This repository contains the import closure of `spec/STATEMENT.lean` from that commit (7543 Lean files,
-byte-identical), plus `README.md`, `LICENSE`, `NOTICE`, `.gitignore`, `scripts/` and `.github/`; `lakefile.toml` lists exactly these
-modules. Development notes, unused modules and internal tooling are not included. The build workflow of this repository passed on this tree.
+The Lean files are the import closure of `spec/STATEMENT.lean` in commit `1b328a4c0a783c23d79288eeb00a58df995fe364`
+of a private development repository (7543 files, byte-identical); `lakefile.toml` is regenerated to list exactly
+these modules. Development notes, unused modules and internal tooling are not included. Toolchain
+`leanprover/lean4:v4.35.0`, Mathlib `v4.35.0`.
 
 ## Building
 
@@ -74,8 +88,7 @@ lake build
 lake env lean scripts/CheckStatement.lean
 ```
 
-A full build compiles 7543 project modules and can take several hours; the workflow caches the project build, so a
-run stopped by the time limit can be re-run and continues where it stopped.
+A full build compiles 7543 project modules and takes many hours.
 
 Toolchain `leanprover/lean4:v4.35.0`, Mathlib `v4.35.0` (`56a005855ea17e0b0958f73ec801ae140b0a1679`).
 
