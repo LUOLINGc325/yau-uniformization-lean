@@ -75,6 +75,11 @@ replays the stored build logs, so their warnings (including `sorry`) are still c
 deletes the per-module setup files of modules that Lake has finished (`scripts/prune_setups.py`), which would
 otherwise fill the runner's disk.
 
+The build of the released sources was accumulated in this way over consecutive runs of the workflow on
+byte-identical sources (source hash `359c4b6f5b5ce1a9cb33f8b441a5cd4c94b271f1`) and completed in
+[run 41791876589](https://github.com/LUOLINGc325/yau-uniformization-lean/actions/runs/41791876589) (attempt 2),
+which passed every check above.
+
 The Lean files are the import closure of `spec/STATEMENT.lean` in commit `1b328a4c0a783c23d79288eeb00a58df995fe364`
 of a private development repository (7543 files, byte-identical); `lakefile.toml` is regenerated to list exactly
 these modules. Development notes, unused modules and internal tooling are not included. Toolchain
@@ -96,4 +101,4 @@ Toolchain `leanprover/lean4:v4.35.0`, Mathlib `v4.35.0` (`56a005855ea17e0b0958f7
 
 Apache-2.0, see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE).
 
-發自我的手機
+<!-- 發自我的手機 -->
