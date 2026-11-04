@@ -116,14 +116,14 @@ jobs:
           rm -rf ~/.cache/mathlib
           df -h /
 
-      - name: Build
-        timeout-minutes: 320
+      - name: Build (first segment)
+        timeout-minutes: 70
         run: |
           set -uo pipefail
           rm -f .prune-stop
           python3 scripts/prune_setups.py --loop 20 --stop-file .prune-stop > prune.log 2>&1 &
           pruner=$!
-          timeout --signal=TERM --kill-after=120 290m lake build 2>&1 | tee build.log
+          timeout --signal=TERM --kill-after=120 60m lake build 2>&1 | tee build.log
           lake_status=${PIPESTATUS[0]}
           touch .prune-stop
           for i in $(seq 1 60); do
@@ -144,7 +144,64 @@ jobs:
           tail -n 5 prune.log || true
           df -h / || true
           if [ "$lake_status" -eq 124 ] || [ "$lake_status" -eq 137 ]; then
-            echo "::error::Build timed out at the self-imposed 290 minute deadline; partial build will be cached for the next attempt"
+            echo "first segment deadline reached; continuing after checkpoint"
+            exit 0
+          fi
+          exit "$lake_status"
+
+      - name: Quiesce build directory (checkpoint)
+        if: always()
+        run: |
+          pkill -f prune_setups.py 2>/dev/null || true
+          pkill -TERM -x lean 2>/dev/null || true
+          pkill -TERM -x lake 2>/dev/null || true
+          for i in $(seq 1 60); do
+            pgrep -f prune_setups.py >/dev/null 2>&1 || pgrep -x lean >/dev/null 2>&1 || pgrep -x lake >/dev/null 2>&1 || break
+            sleep 1
+          done
+          pkill -KILL -f prune_setups.py 2>/dev/null || true
+          pkill -KILL -x lean 2>/dev/null || true
+          pkill -KILL -x lake 2>/dev/null || true
+          sync
+          sleep 2
+          true
+
+      - name: Save checkpoint
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .lake/build
+          key: lake-build-${{ steps.src.outputs.hash }}-${{ github.run_id }}-${{ github.run_attempt }}-c1
+
+      - name: Build
+        timeout-minutes: 235
+        run: |
+          set -uo pipefail
+          rm -f .prune-stop
+          python3 scripts/prune_setups.py --loop 20 --stop-file .prune-stop > prune.log 2>&1 &
+          pruner=$!
+          timeout --signal=TERM --kill-after=120 215m lake build 2>&1 | tee -a build.log
+          lake_status=${PIPESTATUS[0]}
+          touch .prune-stop
+          for i in $(seq 1 60); do
+            kill -0 "$pruner" 2>/dev/null || break
+            sleep 1
+          done
+          kill -0 "$pruner" 2>/dev/null && kill -9 "$pruner" 2>/dev/null || true
+          pkill -TERM -x lean 2>/dev/null || true
+          pkill -TERM -x lake 2>/dev/null || true
+          for i in $(seq 1 60); do
+            pgrep -x lean >/dev/null 2>&1 || pgrep -x lake >/dev/null 2>&1 || break
+            sleep 1
+          done
+          pkill -KILL -x lean 2>/dev/null || true
+          pkill -KILL -x lake 2>/dev/null || true
+          sync
+          python3 scripts/prune_setups.py >> prune.log 2>&1 || true
+          tail -n 5 prune.log || true
+          df -h / || true
+          if [ "$lake_status" -eq 124 ] || [ "$lake_status" -eq 137 ]; then
+            echo "::error::Build timed out at the self-imposed 215 minute deadline (second segment); partial build will be cached for the next attempt"
             exit 1
           fi
           exit "$lake_status"
