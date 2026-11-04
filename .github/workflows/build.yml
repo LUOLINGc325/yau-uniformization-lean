@@ -119,6 +119,8 @@ jobs:
       - name: Build (first segment)
         timeout-minutes: 70
         run: |
+          # Actions runs bash with -e; turn it off so a deadline exit (124) reaches the cleanup below.
+          set +e
           set -uo pipefail
           rm -f .prune-stop
           python3 scripts/prune_setups.py --loop 20 --stop-file .prune-stop > prune.log 2>&1 &
@@ -176,6 +178,8 @@ jobs:
       - name: Build
         timeout-minutes: 235
         run: |
+          # Actions runs bash with -e; turn it off so a deadline exit (124) reaches the cleanup below.
+          set +e
           set -uo pipefail
           rm -f .prune-stop
           python3 scripts/prune_setups.py --loop 20 --stop-file .prune-stop > prune.log 2>&1 &
