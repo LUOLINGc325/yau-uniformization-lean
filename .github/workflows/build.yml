@@ -3,8 +3,9 @@ name: build
 # Build of every module, a no-`sorry` check of the build log, a comment-stripped source scan,
 # a check that the definitions are the audited ones, and an axiom audit of the endpoint theorems
 # after checking their types. The project build is cached under a key derived from the hash of all
-# Lean sources, the lakefile, the lockfile and the toolchain: a run restores only a build made from
-# byte-identical sources, so a run that hits the time limit can be re-run and continues where it stopped.
+# Lean sources under Yau/ and spec/, the lakefile, the lockfile and the toolchain: a run restores
+# only a build made from byte-identical sources, so a run that hits the time limit can be
+# re-run and continues where it stopped.
 on:
   push:
     branches: [main]
@@ -126,7 +127,8 @@ jobs:
           python3 scripts/prune_setups.py --loop 20 --stop-file .prune-stop > prune.log 2>&1 &
           pruner=$!
           timeout --signal=TERM --kill-after=120 60m lake build 2>&1 | tee build.log
-          lake_status=${PIPESTATUS[0]}
+          statuses=("${PIPESTATUS[@]}")
+          lake_status=${statuses[0]}; tee_status=${statuses[1]}
           touch .prune-stop
           for i in $(seq 1 60); do
             kill -0 "$pruner" 2>/dev/null || break
@@ -145,6 +147,10 @@ jobs:
           python3 scripts/prune_setups.py >> prune.log 2>&1 || true
           tail -n 5 prune.log || true
           df -h / || true
+          if [ "$tee_status" -ne 0 ]; then
+            echo "::error::writing build.log failed (tee exit $tee_status)"
+            exit 1
+          fi
           if [ "$lake_status" -eq 124 ] || [ "$lake_status" -eq 137 ]; then
             echo "first segment deadline reached; continuing after checkpoint"
             exit 0
@@ -185,7 +191,8 @@ jobs:
           python3 scripts/prune_setups.py --loop 20 --stop-file .prune-stop > prune.log 2>&1 &
           pruner=$!
           timeout --signal=TERM --kill-after=120 215m lake build 2>&1 | tee -a build.log
-          lake_status=${PIPESTATUS[0]}
+          statuses=("${PIPESTATUS[@]}")
+          lake_status=${statuses[0]}; tee_status=${statuses[1]}
           touch .prune-stop
           for i in $(seq 1 60); do
             kill -0 "$pruner" 2>/dev/null || break
@@ -204,6 +211,10 @@ jobs:
           python3 scripts/prune_setups.py >> prune.log 2>&1 || true
           tail -n 5 prune.log || true
           df -h / || true
+          if [ "$tee_status" -ne 0 ]; then
+            echo "::error::writing build.log failed (tee exit $tee_status)"
+            exit 1
+          fi
           if [ "$lake_status" -eq 124 ] || [ "$lake_status" -eq 137 ]; then
             echo "::error::Build timed out at the self-imposed 215 minute deadline (second segment); partial build will be cached for the next attempt"
             exit 1
@@ -236,10 +247,19 @@ jobs:
 
       - name: No sorry and no errors in the build log
         run: |
-          if grep -nE "declaration uses ['\`]?sorry|(^|[^a-z])error:" build.log; then
-            echo "::error::build log contains sorry or errors"; exit 1
-          fi
-          echo "no sorry warnings, no errors"
+          test -s build.log || { echo "::error::build.log is missing or empty"; exit 1; }
+          set +e
+          grep -nE "declaration uses ['\`]?sorry|(^|[^a-z])error:" build.log
+          grep_status=$?
+          set -e
+          if [ "$grep_status" -eq 0 ]; then echo "::error::build log contains sorry or errors"; exit 1; fi
+          if [ "$grep_status" -ne 1 ]; then echo "::error::could not read build.log (grep exit $grep_status)"; exit 1; fi
+          last=$(grep -v '^[[:space:]]*$' build.log | tail -n 1)
+          case "$last" in
+            "Build completed successfully"*) ;;
+            *) echo "::error::build.log does not end with Lake's completion line"; exit 1 ;;
+          esac
+          echo "no sorry warnings, no errors; build log complete"
 
       - name: Definitions are the audited ones
         run: sha256sum -c scripts/DEFINITIONS.sha256

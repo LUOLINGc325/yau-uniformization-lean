@@ -59,17 +59,18 @@ match the paper is for the reader to judge):
 ## Verification
 
 The [build workflow](.github/workflows/build.yml) of this repository checks out the tree, fetches Mathlib from its
-official cache, runs `lake build`, and fails on any `sorry` warning or error in the build log. It scans the sources
-(comments and strings removed) for `sorry`, `admit`, `native_decide`, `implemented_by`, `extern`, `unsafe`, `axiom`
-declarations, `@[csimp]`, `debug.` options, and commands that add declarations or run code during elaboration
-(`macro`, `syntax`, `elab`, `initialize`, `run_cmd`, `#eval`, …). It checks that `Yau/Geometry/Basic.lean` has the
+official cache, runs `lake build`, and fails if the build log cannot be written or read, does not end with Lake's
+completion line, or contains any `sorry` warning or error. It scans the sources (comments and strings removed) for
+`sorry`, `admit`, `native_decide`, `implemented_by`, `extern`, `unsafe`, `axiom` declarations, `@[csimp]`, `debug.`
+options, and lines that begin with commands that extend the syntax or run code during elaboration (`macro`,
+`syntax`, `elab`, `initialize`, `run_cmd`, `#eval`, …). It checks that `Yau/Geometry/Basic.lean` has the
 SHA-256 recorded in [`scripts/DEFINITIONS.sha256`](scripts/DEFINITIONS.sha256) (the file reviewed before release),
 elaborates [`scripts/CheckStatement.lean`](scripts/CheckStatement.lean), which checks that both endpoints have the
 stated types (up to definitional unfolding), and checks with `#print axioms` that they depend only on `propext`,
 `Classical.choice` and `Quot.sound`.
 
 A full build exceeds the 6-hour limit of one hosted job. A run therefore saves the project build (`.lake/build`)
-under a key derived from the SHA-256 of all Lean sources, the lakefile, the lockfile and the toolchain, and a later
+under a key derived from the SHA-256 of all Lean sources under `Yau/` and `spec/`, the lakefile, the lockfile and the toolchain, and a later
 run restores only a build made from byte-identical sources. Lake then rebuilds nothing that is up to date and
 replays the stored build logs, so their warnings (including `sorry`) are still checked. While building, the workflow
 deletes the per-module setup files of modules that Lake has finished (`scripts/prune_setups.py`), which would
@@ -78,11 +79,13 @@ otherwise fill the runner's disk.
 The build of the released sources was accumulated in this way over consecutive runs of the workflow on
 byte-identical sources (source hash `359c4b6f5b5ce1a9cb33f8b441a5cd4c94b271f1`) and completed in
 [run 41791876589](https://github.com/LUOLINGc325/yau-uniformization-lean/actions/runs/41791876589) (attempt 2),
-which passed every check above.
+which passed every check of the workflow revision it ran (the log-capture, log-read and completion-line checks
+described above were added afterwards).
 
-The Lean files are the import closure of `spec/STATEMENT.lean` in commit `1b328a4c0a783c23d79288eeb00a58df995fe364`
-of a private development repository (7543 files, byte-identical); `lakefile.toml` is regenerated to list exactly
-these modules. Development notes, unused modules and internal tooling are not included. Toolchain
+The Lean files under `Yau/` and `spec/` are the import closure of `spec/STATEMENT.lean` in commit
+`1b328a4c0a783c23d79288eeb00a58df995fe364` of a private development repository (7543 files, byte-identical);
+`lakefile.toml` is regenerated to list exactly these modules, and `scripts/CheckStatement.lean` is the release check
+of the endpoint statements. Development notes, unused modules and internal tooling are not included. Toolchain
 `leanprover/lean4:v4.35.0`, Mathlib `v4.35.0`.
 
 ## Building
