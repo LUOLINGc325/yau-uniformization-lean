@@ -123,14 +123,48 @@ jobs:
           rm -f .prune-stop
           python3 scripts/prune_setups.py --loop 20 --stop-file .prune-stop > prune.log 2>&1 &
           pruner=$!
-          lake build 2>&1 | tee build.log
+          timeout --signal=TERM --kill-after=120 290m lake build 2>&1 | tee build.log
           lake_status=${PIPESTATUS[0]}
           touch .prune-stop
-          wait "$pruner" || true
+          for i in $(seq 1 60); do
+            kill -0 "$pruner" 2>/dev/null || break
+            sleep 1
+          done
+          kill -0 "$pruner" 2>/dev/null && kill -9 "$pruner" 2>/dev/null || true
+          pkill -TERM -x lean 2>/dev/null || true
+          pkill -TERM -x lake 2>/dev/null || true
+          for i in $(seq 1 60); do
+            pgrep -x lean >/dev/null 2>&1 || pgrep -x lake >/dev/null 2>&1 || break
+            sleep 1
+          done
+          pkill -KILL -x lean 2>/dev/null || true
+          pkill -KILL -x lake 2>/dev/null || true
+          sync
           python3 scripts/prune_setups.py >> prune.log 2>&1 || true
           tail -n 5 prune.log || true
           df -h / || true
+          if [ "$lake_status" -eq 124 ] || [ "$lake_status" -eq 137 ]; then
+            echo "::error::Build timed out at the self-imposed 290 minute deadline; partial build will be cached for the next attempt"
+            exit 1
+          fi
           exit "$lake_status"
+
+      - name: Quiesce build directory
+        if: always()
+        run: |
+          pkill -f prune_setups.py 2>/dev/null || true
+          pkill -TERM -x lean 2>/dev/null || true
+          pkill -TERM -x lake 2>/dev/null || true
+          for i in $(seq 1 60); do
+            pgrep -f prune_setups.py >/dev/null 2>&1 || pgrep -x lean >/dev/null 2>&1 || pgrep -x lake >/dev/null 2>&1 || break
+            sleep 1
+          done
+          pkill -KILL -f prune_setups.py 2>/dev/null || true
+          pkill -KILL -x lean 2>/dev/null || true
+          pkill -KILL -x lake 2>/dev/null || true
+          sync
+          sleep 2
+          true
 
       - name: Save the project build for the next run
         if: always()
